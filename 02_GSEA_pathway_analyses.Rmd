@@ -1,0 +1,444 @@
+---
+title: "02_GSEA_pathway_analyses"
+author: 
+- name: "Ralitsa R. Madsen"
+  affiliation: UCL
+output: 
+  html_notebook:
+    theme: united
+    toc: yes
+    toc_float: true
+  html_document:
+    code_folding: show
+    theme: paper
+    highlight: kate
+    df_print: paged
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+# Readme
+
+This notebook should only be run after "01_Differential_gene_expression_analysis.Rmd" has been run, with access to the same Global Environment. 
+
+# Setup
+
+```{r setup, warning=FALSE}
+knitr::opts_chunk$set(echo = T, warning = F, message = F) # setting global chunk options for knitted output
+#source("scripts/install.packages.R") # installs all required packages; uncomment and run if not done once already
+source("scripts/packages.R") # loads the required packages
+sessionInfo() # package version information
+input.data <- file.path(getwd(), "data_input/")
+output.figures <- file.path(getwd(), "figures_output/")
+output.df <- file.path(getwd(), "data_output/")
+options("scipen"=5, "digits"=4) # control scientific notation, in this case triggered only when number is 10 digits
+```
+
+# GSEA testing with fgsea
+
+Reference: Sergushichev, A.A., 2016. An algorithm for fast preranked gene set enrichment analysis using cumulative statistic calculation. bioRxiv 060012.
+
+#### Retrieve relevant gene sets
+
+Hallmark gene sets from mSigDb
+
+```{r}
+m_df <- msigdbr(species = "Homo sapiens", category = "H")
+```
+
+```{r}
+m_df1 <- m_df %>% dplyr::select(gs_name, human_gene_symbol)
+```
+
+```{r}
+unique.gs.h <- unique(m_df1$gs_name)
+length <- length(unique.gs.h)
+hallmark.gs <- vector(mode = "list", length = length)
+```
+
+```{r}
+m_df1[m_df1$gs_name %in% unique.gs.h[1],]
+```
+
+Create a list of the hallmark gene sets
+
+```{r}
+for (gs in 1:length) {
+  gene.set.h <- unique.gs.h[gs] # pull out signature name
+  names(hallmark.gs)[gs] <- gene.set.h # assign signature name to list components
+  hallmark.gs[[gs]] <- m_df1$human_gene_symbol[m_df1$gs_name %in% gene.set.h] # assign signature gene ids to the respective list component
+}
+```
+
+```{r}
+length(hallmark.gs)
+```
+
+
+## Create vectors of gene expression values from the different lists of differentially expressed genes
+
+NB: these vectors won't be ranked manually as this happens during the fgsea run itself.
+
+- First make sure that any ENSGs resulting in duplicate HGNCs are removed to avoid ambiguity in the subsequent fgsea analysis
+
+```{r}
+length(de.data.annot$HGNC[duplicated(de.data.annot$HGNC)]) # 4120
+```
+
+- Confirm that these duplications do not reflect duplications at the ENSG level
+
+```{r}
+length(de.data.annot$Genes[duplicated(de.data.annot$Genes)]) # 0, i.e. no ENSG duplications
+```
+
+- Extract the duplicated genes
+
+```{r}
+dupl <- unique(de.data.annot$HGNC[duplicated(de.data.annot$HGNC)]) # actually only 1 real duplication = TBCE; the rest come from missing annotations 
+de.data.annot.no.dupl <- de.data.annot %>% 
+  filter(!(HGNC %in% dupl))
+```
+
+
+```{r}
+# KOvsWT
+de.data.annot.KOvsWT.rank <- de.data.annot.no.dupl %>% 
+  dplyr::select(HGNC, t.KOvsWT) %>% 
+  filter(HGNC != "") %>% # already removed, but included from external code snippet
+  filter(!is.na(HGNC)) 
+de.data.annot.KOvsWT.rank.vector <- tibble::deframe(de.data.annot.KOvsWT.rank)
+```
+
+```{r}
+head(de.data.annot.KOvsWT.rank.vector)
+```
+
+```{r}
+# WT INH1vsVEH
+de.data.annot.WT_INH1vsVEH.rank <- de.data.annot.no.dupl %>% 
+  dplyr::select(HGNC, t.WT_INH1) %>% 
+  filter(HGNC != "") %>% # already removed, but included from external code snippet
+  filter(!is.na(HGNC)) 
+de.data.annot.WT_INH1vsVEH.rank.vector <- tibble::deframe(de.data.annot.WT_INH1vsVEH.rank)
+```
+
+```{r}
+head(de.data.annot.WT_INH1vsVEH.rank.vector)
+```
+
+```{r}
+# WT INH2vsVEH
+de.data.annot.WT_INH2vsVEH.rank <- de.data.annot.no.dupl %>% 
+  dplyr::select(HGNC, t.WT_INH2) %>% 
+  filter(HGNC != "") %>% # already removed, but included from external code snippet
+  filter(!is.na(HGNC)) 
+de.data.annot.WT_INH2vsVEH.rank.vector <- tibble::deframe(de.data.annot.WT_INH2vsVEH.rank)
+```
+
+```{r}
+head(de.data.annot.WT_INH2vsVEH.rank.vector)
+```
+
+
+```{r}
+# KO INH1vsVEH
+de.data.annot.KO_INH1vsVEH.rank <- de.data.annot.no.dupl %>% 
+  dplyr::select(HGNC, t.KO_INH1) %>% 
+  filter(HGNC != "") %>% # already removed, but included from external code snippet
+  filter(!is.na(HGNC)) 
+de.data.annot.KO_INH1vsVEH.rank.vector <- tibble::deframe(de.data.annot.KO_INH1vsVEH.rank)
+```
+
+```{r}
+head(de.data.annot.KO_INH1vsVEH.rank.vector)
+```
+
+```{r}
+# KO INH2vsVEH
+de.data.annot.KO_INH2vsVEH.rank <- de.data.annot.no.dupl %>% 
+  dplyr::select(HGNC, t.KO_INH2) %>% 
+  filter(HGNC != "") %>% # already removed, but included from external code snippet
+  filter(!is.na(HGNC)) 
+de.data.annot.KO_INH2vsVEH.rank.vector <- tibble::deframe(de.data.annot.KO_INH2vsVEH.rank)
+```
+
+```{r}
+head(de.data.annot.KO_INH2vsVEH.rank.vector)
+```
+
+
+### fgsea run 
+
+Using updated approach where default is fgseaMultilevel
+
+Not focusing on INH2 due to small t values, i.e. very few differentially expressed genes across the two genotypes.
+
+##### KOvsWT
+
+```{r}
+fgsea.de.data.annot.KOvsWT <- fgsea(pathways = hallmark.gs, 
+                  stats = de.data.annot.KOvsWT.rank.vector,
+                  minSize=15,
+                  maxSize=500)
+```
+
+
+```{r}
+fgsea.de.data.annot.KOvsWT %>% 
+  arrange(padj)
+```
+
+Make table plot
+
+```{r}
+topPathwaysUp.KOvsWT <- fgsea.de.data.annot.KOvsWT[ES > 0][head(order(pval), n=10), pathway]
+topPathwaysDown.KOvsWT <- fgsea.de.data.annot.KOvsWT[ES < 0][head(order(pval), n=10), pathway]
+topPathways.KOvsWT <- c(topPathwaysUp.KOvsWT, rev(topPathwaysDown.KOvsWT))
+png(paste0(output.figures, Sys.Date(), sep="_", "GSEA_KOvsWT", ".png"),
+    height=1500, width=3500, res=300)
+plotGseaTable(hallmark.gs[topPathways.KOvsWT], 
+              de.data.annot.KOvsWT.rank.vector, 
+              fgsea.de.data.annot.KOvsWT, 
+              gseaParam = 0.5)
+dev.off()
+```
+
+```{r}
+fgsea.de.data.annot.KOvsWT$Condition <- "KOvsWT" # required for heatmap
+```
+
+
+##### WT INH1vsVEH
+
+```{r}
+fgsea.de.data.annot.WT.INH1vsVEH <- fgsea(pathways = hallmark.gs, 
+                  stats = de.data.annot.WT_INH1vsVEH.rank.vector,
+                  minSize=15,
+                  maxSize=500)
+```
+
+
+```{r}
+fgsea.de.data.annot.WT.INH1vsVEH %>% 
+  arrange(padj)
+```
+
+Make table plot
+
+```{r}
+topPathwaysUp.WT.INH1vsVEH <- fgsea.de.data.annot.WT.INH1vsVEH[ES > 0][head(order(pval), n=10), pathway]
+topPathwaysDown.WT.INH1vsVEH <- fgsea.de.data.annot.WT.INH1vsVEH[ES < 0][head(order(pval), n=10), pathway]
+topPathways.WT.INH1vsVEH <- c(topPathwaysUp.WT.INH1vsVEH, rev(topPathwaysDown.WT.INH1vsVEH))
+png(paste0(output.figures, Sys.Date(), sep="_", "GSEA_WT_INH1vsVEH", ".png"),
+    height=1500, width=3500, res=300)
+plotGseaTable(hallmark.gs[topPathways.WT.INH1vsVEH], 
+              de.data.annot.WT_INH1vsVEH.rank.vector, 
+              fgsea.de.data.annot.WT.INH1vsVEH, 
+              gseaParam = 0.5)
+dev.off()
+```
+
+```{r}
+fgsea.de.data.annot.WT.INH1vsVEH$Condition <- "WT.INH1vsVEH" # required for heatmap
+```
+
+##### KO INH1vsVEH
+
+```{r}
+fgsea.de.data.annot.KO.INH1vsVEH <- fgsea(pathways = hallmark.gs, 
+                  stats = de.data.annot.KO_INH1vsVEH.rank.vector,
+                  minSize=15,
+                  maxSize=500)
+```
+
+
+```{r}
+fgsea.de.data.annot.KO.INH1vsVEH %>% 
+  arrange(padj)
+```
+
+Make table plot
+
+```{r}
+topPathwaysUp.KO.INH1vsVEH <- fgsea.de.data.annot.KO.INH1vsVEH[ES > 0][head(order(pval), n=10), pathway]
+topPathwaysDown.KO.INH1vsVEH <- fgsea.de.data.annot.KO.INH1vsVEH[ES < 0][head(order(pval), n=10), pathway]
+topPathways.KO.INH1vsVEH <- c(topPathwaysUp.KO.INH1vsVEH, rev(topPathwaysDown.KO.INH1vsVEH))
+png(paste0(output.figures, Sys.Date(), sep="_", "GSEA_KO_INH1vsVEH", ".png"),
+    height=1500, width=3500, res=300)
+plotGseaTable(hallmark.gs[topPathways.KO.INH1vsVEH], 
+              de.data.annot.KO_INH1vsVEH.rank.vector, 
+              fgsea.de.data.annot.KO.INH1vsVEH, 
+              gseaParam = 0.5)
+dev.off()
+```
+
+```{r}
+fgsea.de.data.annot.KO.INH1vsVEH$Condition <- "KO.INH1vsVEH" # required for heatmap
+```
+
+
+
+##### Heatmap
+
+```{r}
+hallmark.GSEA.wide <- rbind(fgsea.de.data.annot.KOvsWT %>% dplyr::select(-leadingEdge),
+                            fgsea.de.data.annot.WT.INH1vsVEH %>% dplyr::select(-leadingEdge),
+                            fgsea.de.data.annot.KO.INH1vsVEH %>% dplyr::select(-leadingEdge)) %>% 
+  #filter(padj < 0.1) %>% # filter out for no p-value
+  dplyr::select(pathway, NES, Condition) %>% 
+  arrange(Condition, NES) %>% # doing this to ensure sensible ordering of heatmap further below
+  pivot_wider(names_from = Condition, values_from = NES)
+```
+
+
+```{r}
+head(hallmark.GSEA.wide)
+```
+
+
+```{r}
+hallmark.GSEA.wide.m <- as.matrix(hallmark.GSEA.wide[,-1])
+rownames(hallmark.GSEA.wide.m) <- hallmark.GSEA.wide$pathway
+#hallmark.GSEA.wide.m <- hallmark.GSEA.wide.m[rowSums(is.na(hallmark.GSEA.wide.m)) < 4, ] # keeping only pathways that are not NA in more than 3 samples
+```
+
+
+```{r}
+quantile(as.matrix(hallmark.GSEA.wide.m), 
+         c(0.1, 0.9), na.rm = TRUE) # doing this to determine relevant min and max value to cap colour scale for heat map
+```
+
+```{r}
+library(circlize)
+col_fun <- colorRamp2(c(-1.8, 0, 1.8), viridis(3))
+```
+
+
+```{r}
+ht_list <- Heatmap(hallmark.GSEA.wide.m, 
+        name = "NES, GSEA", 
+        na_col = "black", 
+        column_title = "Comparisons", 
+    row_title = "Pathways", 
+    column_title_side = "bottom", 
+    column_title_gp = gpar(fontsize = 8, fontface = "bold"), 
+    row_title_gp = gpar(fontsize = 8, fontface = "bold"), 
+    column_names_gp = gpar(fontsize = 8),
+    row_names_gp = gpar(fontsize = 5),
+    border = TRUE,
+    cluster_rows = TRUE, # must be FALSE if filtering on padj after rbind() above
+    cluster_columns = TRUE, # must be FALSE if filtering on padj after rbind() above
+    col = col_fun,
+    use_raster = TRUE, 
+    raster_device = "png",
+    show_row_names = TRUE
+    )
+pdf(paste0(output.figures, Sys.Date(), 
+           sep="_", "heatmap_GSEA_from_t-values", ".pdf"), width = 5, height = 5)
+draw(ht_list, heatmap_legend_side = "left")
+dev.off()
+```
+
+
+# PROGENy
+
+Alternative pathway analysis method based on Schubert et al. 2018 Nature Communications (doi: 10.1186/s13059-020-1949-z)
+
+- Need voom matrix with HGNC identifiers
+
+```{r}
+v.DGE.df <- as.data.frame(v.DGE) %>% 
+  mutate(Genes = rownames(v.DGE))
+```
+
+```{r}
+v.DGE.annot <-
+  inner_join(v.DGE.df, de.data.annot.no.dupl, by = "Genes") # inner join to make sure only Genes without HGNC duplications or NA retained
+v.DGE.annot 
+```
+
+```{r}
+colnames(v.DGE.annot)
+```
+
+
+```{r}
+v.DGE.annot.m <- v.DGE.annot %>% 
+  dplyr::select(contains("HGNC") | contains("WT_vehicle") | contains("KO_vehicle") |
+                  contains("WT_inh") | contains("KO_inh")) %>% 
+  dplyr::select(-c(HGNC, contains("P.value") | contains("Coef.") | contains("t."))) %>% 
+  dplyr::mutate_if(~ any(is.na(.x)),~ if_else(is.na(.x),0,.x)) %>% 
+  as.matrix() 
+rownames(v.DGE.annot.m) <- v.DGE.annot %>% 
+  .$HGNC
+```
+
+```{r}
+head(v.DGE.annot.m)
+```
+
+
+```{r}
+progeny <- progeny(v.DGE.annot.m, scale=TRUE, 
+    organism="Human", top = 100)
+Activity_counts <- as.vector(progeny)
+```
+
+
+```{r}
+paletteLength <- 100
+myColor <- 
+    colorRampPalette(c("darkblue", "whitesmoke","indianred"))(paletteLength)
+
+progenyBreaks <- c(seq(min(Activity_counts), 0, 
+    length.out=ceiling(paletteLength/2) + 1),
+    seq(max(Activity_counts)/paletteLength, 
+    max(Activity_counts), 
+    length.out=floor(paletteLength/2)))
+
+progeny_hmap <- pheatmap(t(progeny),fontsize=14, 
+    fontsize_row = 10, fontsize_col = 10, 
+    color=myColor, breaks = progenyBreaks, 
+    main = "PROGENy (100)", angle_col = 45,
+    border_color = NA)
+```
+
+```{r}
+quantile(progeny, 
+         c(0.1, 0.9), na.rm = TRUE) # doing this to determine relevant min and max value to cap colour scale for heat map
+```
+
+```{r}
+col_fun <- colorRamp2(c(-1.3, 0, 1.3), viridis(3))
+```
+
+
+```{r}
+ht_list <- Heatmap(t(progeny), 
+        name = "PROGENy Score", 
+        na_col = "black", 
+        column_title = "Samples", 
+    row_title = "Pathways", 
+    column_title_side = "bottom", 
+    column_title_gp = gpar(fontsize = 8, fontface = "bold"), 
+    row_title_gp = gpar(fontsize = 8, fontface = "bold"), 
+    column_names_gp = gpar(fontsize = 8),
+    row_names_gp = gpar(fontsize = 5),
+    border = TRUE,
+    cluster_rows = TRUE, # must be FALSE if filtering on padj after rbind() above
+    cluster_columns = TRUE, # must be FALSE if filtering on padj after rbind() above
+    col = col_fun,
+    use_raster = TRUE, 
+    raster_device = "png",
+    show_row_names = TRUE
+    )
+pdf(paste0(output.figures, Sys.Date(), 
+           sep="_", "heatmap_PROGENy", ".pdf"), width = 5, height = 5)
+draw(ht_list, heatmap_legend_side = "left")
+dev.off()
+```
+
+
+***
+

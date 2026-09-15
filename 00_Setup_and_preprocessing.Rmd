@@ -1,0 +1,494 @@
+---
+title: "00_Setup_and_preprocessing"
+author: 
+- name: "Ralitsa R. Madsen"
+  affiliation: UCL
+output: 
+  html_notebook:
+    theme: united
+    toc: yes
+    toc_float: true
+  html_document:
+    code_folding: show
+    theme: paper
+    highlight: kate
+    df_print: paged
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+# Biological background 
+
+Experiment perfmored by Elena Guidamillas, postdoctoral researcher in Bart Vanhaesebroeck's group at UCL, London. 
+
+For conditions, see metadata and the accompanying readme file.
+
+Focus of this notebook: analysis of U87MG glioblastoma cancer cells - WT or PIK3CD KO; +/- 2 different PI3Kd inhibitors.
+
+
+#### Analysis 
+
+
+Pipeline for further differential gene expression analysis in R: 
+  - Standard limma-voom workflow analysis
+  - Relevant references (doi): 10.1093/bioinformatics/btt656 ; doi: 10.1093/nar/gkv007 
+
+
+# Setup
+
+```{r setup, warning=FALSE}
+knitr::opts_chunk$set(echo = T, warning = F, message = F) # setting global chunk options for knitted output
+#source("scripts/install.packages.R") # installs all required packages; uncomment and run if not done once already
+source("scripts/packages.R") # loads the required packages
+sessionInfo() # package version information
+input.data <- file.path(getwd(), "data_input/")
+output.figures <- file.path(getwd(), "figures_output/")
+output.df <- file.path(getwd(), "data_output/")
+options("scipen"=5, "digits"=4) # control scientific notation, in this case triggered only when number is 10 digits
+```
+
+# Metadata
+
+```{r}
+metadata <- read_csv(paste0(input.data, "metadata_ELG.csv")) %>% 
+  mutate(TREATMENT = factor(TREATMENT, 
+                          levels = c("vehicle", "inh1", "inh2")),
+         REPLICATE = factor(REPLICATE)
+         ) %>% 
+  filter(CELL_LINE == "U87MG") # ensuring focus on U87MG only
+metadata <- as.data.frame(metadata)
+```
+
+```{r}
+library(assertr)
+metadata %>% 
+  assert_rows(col_concat, is_uniq, FOLDER) # confirming that the FOLDER IDs are unique for all rows - necessary for downstream sample assignment
+```
+
+
+- Check factorial levels and replicate numbers
+
+```{r}
+metadata %>% 
+  group_by(GENOTYPE, CELL_LINE, TREATMENT) %>% 
+  dplyr::summarise(n = n()) # all collrect n=3
+```
+- Create new column with meaningful sample name 
+
+```{r}
+metadata <- metadata %>% 
+  unite("Rcode_analysis", CELL_LINE, GENOTYPE, TREATMENT, REPLICATE, remove = FALSE)
+rownames(metadata) <- metadata$FOLDER # required for some of the downstream functions to run correctly 
+metadata #check 
+```
+
+
+# Read data & merge with metadata
+
+```{r raw_data}
+rawGeneCountTable <- read.table(paste0(input.data, 
+                                       "merged_gene_counts.txt"), 
+                                header = TRUE,
+                            row.names = 1) # read raw gene count data file, columns correspond to counts in individual samples, rows to genes
+###
+ncol(rawGeneCountTable) # 45 columns = correct
+```
+
+
+```{r}
+head(rawGeneCountTable) # inspect
+```
+
+```{r}
+#select only U87MG samples
+rawGeneCountTable <- rawGeneCountTable[, colnames(rawGeneCountTable) %in% rownames(metadata)]
+ncol(rawGeneCountTable) # 18 is correct
+```
+
+
+
+```{r annotate}
+index <- match(colnames(rawGeneCountTable), rownames(metadata)) # ordering sample metadata information according to column names of raw data table; stored as index values for subsequent subsetting
+names.samples <- as.factor(metadata$Rcode_analysis[index])
+exp.samples <- as.factor(metadata$REPLICATE[index])
+treatment.samples <- as.factor(metadata$TREATMENT[index])
+genotype.samples <- as.factor(metadata$GENOTYPE[index])
+cell.samples <- as.factor(metadata$CELL_LINE[index])
+colnames(rawGeneCountTable) <- names.samples
+```
+
+```{r}
+head(rawGeneCountTable) # confirm that this worked
+```
+
+```{r}
+rawGeneCountTable.DGE <-
+  DGEList(rawGeneCountTable) # create DGEobject, necessary for downstream analysis using edgeR functions
+# This function will create a combined table of counts with rows for genes and columns for samples.
+rawGeneCountTable.DGE$samples$treatment <- treatment.samples
+rawGeneCountTable.DGE$samples$exp <- exp.samples
+rawGeneCountTable.DGE$samples$genotype <- genotype.samples
+rawGeneCountTable.DGE$samples$cell.samples <- cell.samples
+rawGeneCountTable.DGE$samples # check that annotations are correct
+```
+
+- Check range and mean of library size
+
+```{r}
+range(rawGeneCountTable.DGE[[2]][2]) # very large range; from ~21M to ~60M
+```
+
+```{r}
+mean(rawGeneCountTable.DGE$samples$lib.size) # mean library size: [1] c. 30M
+median(rawGeneCountTable.DGE$samples$lib.size) # mean library size: [1] c. 25M
+```
+
+- How many genes are not expressed at all across all samples, i.e. counts = 0.
+
+```{r}
+table(rowSums(rawGeneCountTable.DGE$counts == 0) == 18)
+```
+
+## Filtering
+
+Filtering out lowly expressed genes using quantile method from TCGAbiolinks package
+
+  - Determine reasonable filtering threshold based on the below loop results
+
+```{r}
+for (value in c(0, 0.1, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9)) {
+  dataFilt <- TCGAanalyze_Filtering(rawGeneCountTable.DGE$counts,
+                                    method = "quantile", 
+                                    qnt.cut =  value) # looping through possible quantile values
+  lcpm.dataFilt <- log2(dataFilt+0.5) # not actually transformed to cpm prior to this, so seeing effect of 2 outlier samples with respect to library size.
+  nsamples1 <- ncol(lcpm.dataFilt) 
+  plot(
+    density(lcpm.dataFilt[, 1]), 
+    lwd = 2,
+    ylim = c(0, 0.5),
+    las = 2,
+    # axis labels perpendicular to the axes; lwd = line width
+    main = "",
+    xlab = ""
+  )
+  abline(v = 0, lty = 3) # lty = line type, dotted in this case
+  # Nested loop to plot density of each sample following filtering 
+  for (i in 2:nsamples1) {
+    den <- density(lcpm.dataFilt[, i])
+    lines(den$x, den$y, lwd = 2)
+  }
+  title(main = paste0("Raw_data, quantile=", value), xlab = "logged counts")
+}
+```
+
+
+- A cut-off of 0.7 appears reasonable
+
+```{r}
+cutoff.filt <- 0.7
+```
+
+
+```{r}
+rawGeneCountTable.DGE$counts.filt <- TCGAanalyze_Filtering(rawGeneCountTable.DGE$counts,
+                                                           method = "quantile", 
+                                                           qnt.cut =  cutoff.filt) # down to 17636 genes
+
+dim(rawGeneCountTable.DGE$counts.filt) # 17636 genes retained
+```
+
+
+
+- Create new ExpressionSet object of filtered counts
+
+```{r}
+rawGeneCountTable.DGE.filt <- DGEList(rawGeneCountTable.DGE$counts.filt)
+```
+
+## MDS plot
+
+
+### MDS plot before normalisation
+
+- Colour according to different grouping criteria to check for drivers of separation
+
+
+```{r}
+col.exp <- exp.samples
+levels(col.exp) <- brewer.pal(length(levels(exp.samples)), "Set1") 
+
+col.genotype <- genotype.samples
+levels(col.genotype) <- brewer.pal(length(levels(genotype.samples)), "Set1") 
+
+col.treatment <- treatment.samples
+levels(col.treatment) <- brewer.pal(length(levels(col.treatment)), "Set1") 
+
+col.cell <- cell.samples
+levels(col.cell) <- brewer.pal(length(levels(cell.samples)), "Set1") 
+```
+
+
+ - Colour according to genotype
+
+ 
+```{r}
+png(file=paste0(output.figures, 
+                Sys.Date(), 
+                sep="_", "MDS_EG_pre.norm_U87MG_genotype.col_500genes", ".png"), 
+    height=1500, width=2000, res=300)
+par(mar=c(4.1, 4.1, 4.1, 4.1), xpd=TRUE) # add extra space to the right of the plot; needed to include legend and still see samples
+plotMDS(
+    cpm(rawGeneCountTable.DGE$counts.filt, log = T),
+    labels = as.character(genotype.samples),
+    pch = 1,
+    col = as.character(col.genotype),
+    xlim = c(-3, 3),
+    ylim = c(-2, 2),
+    xlab = "Dimension 1",
+    ylab = "Dimension 2",
+    cex = 1,
+    cex.axis = 1, 
+    cex.lab = 1
+  )
+title(main = "MDS_EG_U87_PI3Kd MDS plot \n Leading fold-change (500 most divergent genes)", cex.main=1)
+legend(
+  "topright",
+  fill = paste0(levels(col.genotype)),
+  legend = paste0(levels(genotype.samples)),
+  cex = 0.8
+)
+dev.off()
+```
+
+
+ - Colour according to treatment
+
+ 
+```{r}
+png(file=paste0(output.figures, 
+                Sys.Date(), 
+                sep="_", "MDS_EG_pre.norm_U87MG_treatment.col_500genes", ".png"), 
+    height=1500, width=2000, res=300)
+par(mar=c(4.1, 4.1, 4.1, 4.1), xpd=TRUE) # add extra space to the right of the plot; needed to include legend and still see samples
+plotMDS(
+    cpm(rawGeneCountTable.DGE$counts.filt, log = T),
+    labels = as.character(treatment.samples),
+    pch = 1,
+    col = as.character(col.genotype),
+    xlim = c(-3, 3),
+    ylim = c(-2, 2),
+    xlab = "Dimension 1",
+    ylab = "Dimension 2",
+    cex = 1,
+    cex.axis = 1, 
+    cex.lab = 1
+  )
+title(main = "MDS_EG_U87_PI3Kd MDS plot \n Leading fold-change (500 most divergent genes)", cex.main=1)
+legend(
+  "topright",
+  fill = paste0(levels(col.genotype)),
+  legend = paste0(levels(genotype.samples)),
+  cex = 0.8
+)
+dev.off()
+```
+
+Inh1 contributes to separation in 2nd dimension. 
+
+
+## TMM normalisation
+
+- Reference for method: Robinson, M.D., Oshlack, A., 2010. A scaling normalization method for differential expression analysis of RNA-seq data. Genome Biol. 11, R25. https://doi.org/10.1186/gb-2010-11-3-r25
+
+```{r}
+rawGeneCountTable.DGE.filt <- calcNormFactors(rawGeneCountTable.DGE.filt, 
+                                              method = "TMM")
+```
+
+```{r}
+rawGeneCountTable.DGE.filt$samples # check normalisation factors
+```
+
+### MDS plot post-normalisation
+
+  - Check how the samples cluster following normalisation; for this, first run voom so that normalisation factors can be taken into account.
+
+```{r normalisation_voom}
+voom_normalisation <- voom(rawGeneCountTable.DGE.filt) 
+```
+
+
+```{r}
+png(file=paste0(output.figures, 
+                Sys.Date(), 
+                sep="_", "MDS_EG_post.norm_cell_line_treatment.col_500genes", ".png"), 
+    height=1500, width=2000, res=300)
+par(mar=c(4.1, 4.1, 4.1, 4.1), xpd=TRUE) # add extra space to the right of the plot; needed to include legend and still see samples
+plotMDS(
+    cpm((2^voom_normalisation$E), log=T),
+    labels = as.character(treatment.samples),
+    pch = 1,
+    col = as.character(col.genotype),
+    xlim = c(-3, 3),
+    ylim = c(-2, 2),
+    xlab = "Dimension 1",
+    ylab = "Dimension 2",
+    cex = 1,
+    cex.axis = 1, 
+    cex.lab = 1
+  )
+title(main = "MDS_EG_U87_PI3Kd MDS plot \n Leading fold-change (500 most divergent genes)", cex.main=1)
+legend(
+  "topright",
+  fill = paste0(levels(col.genotype)),
+  legend = paste0(levels(genotype.samples)),
+  cex = 0.8
+)
+dev.off()
+```
+
+### PCA pre-normalisation
+
+For additional information & functions within PCAtools package, see: https://bioconductor.org/packages/release/bioc/vignettes/PCAtools/inst/doc/PCAtools.html
+
+
+```{r}
+# check that sample names match exactly between pdata and expression data 
+rownames(metadata) <- metadata$Rcode_analysis
+all(colnames(voom_normalisation) == rownames(metadata))
+```
+
+
+```{r}
+p <- pca(cpm(rawGeneCountTable.DGE.filt, log = T), 
+         metadata = metadata, 
+         removeVar = 0.1) ## -- removing the lower 10% of variables based on variance
+```
+
+
+#### Scree plot
+
+```{r screeplot}
+png(file=paste0(output.figures, 
+                Sys.Date(), 
+                sep="_", "PCA_screeplot_U87MG", ".png"), 
+    height=1500, width=2000, res=300)
+screeplot(p, axisLabSize = 10, titleLabSize = 12)
+dev.off()
+```
+
+- Which PCs contribute 80% of the variance in the data?
+
+```{r}
+which(cumsum(p$variance) > 80)[1] # the first 5 
+```
+
+#### Bi-plot
+
+- PC1 vs PC2
+
+```{r}
+png(file=paste0(output.figures, 
+                Sys.Date(), 
+                sep="_", "PC1vsPC2_U87MG", ".png"), 
+    height=1500, width=2000, res=300)
+biplot(p, x = "PC1", y = "PC2",
+  lab = NULL,
+  colby = "TREATMENT",
+  shape = "GENOTYPE",
+  hline = 0, vline = 0,
+      # ellipse config
+  ellipse = F,
+  ellipseConf = 0.95,
+  ellipseFill = TRUE,
+  ellipseAlpha = 1/4,
+  ellipseLineSize = 1.0,
+  gridlines.major = FALSE, gridlines.minor = FALSE,
+  title = "PCA bi-plot",
+  subtitle = "PC1 versus PC2",
+  legendPosition = "right")
+dev.off()
+```
+
+
+- PC1 vs PC3
+
+
+```{r}
+png(file=paste0(output.figures, 
+                Sys.Date(), 
+                sep="_", "PC1vsPC3_U87MG", ".png"), 
+    height=1500, width=2000, res=300)
+biplot(p, x = "PC1", y = "PC3",
+  lab = NULL,
+  colby = "TREATMENT",
+  shape = "GENOTYPE",
+  hline = 0, vline = 0,
+      # ellipse config
+  ellipse = F,
+  ellipseConf = 0.95,
+  ellipseFill = TRUE,
+  ellipseAlpha = 1/4,
+  ellipseLineSize = 1.0,
+  gridlines.major = FALSE, gridlines.minor = FALSE,
+  title = "PCA bi-plot",
+  subtitle = "PC1 versus PC3",
+  legendPosition = "right")
+dev.off()
+```
+
+- PC2 vs PC3
+
+```{r}
+png(file=paste0(output.figures, 
+                Sys.Date(), 
+                sep="_", "PC2vsPC3_U87MG", ".png"), 
+    height=1500, width=2000, res=300)
+biplot(p, x = "PC2", y = "PC3",
+  lab = NULL,
+  colby = "TREATMENT",
+  shape = "GENOTYPE",
+  hline = 0, vline = 0,
+      # ellipse config
+  ellipse = F,
+  ellipseConf = 0.95,
+  ellipseFill = TRUE,
+  ellipseAlpha = 1/4,
+  ellipseLineSize = 1.0,
+  gridlines.major = FALSE, gridlines.minor = FALSE,
+  title = "PCA bi-plot",
+  subtitle = "PC2 versus PC3",
+  legendPosition = "right")
+dev.off()
+```
+
+- PC1 vs PC4;
+
+```{r}
+png(file=paste0(output.figures, 
+                Sys.Date(), 
+                sep="_", "PC1vsPC4_U87MG", ".png"), 
+    height=1500, width=2000, res=300)
+biplot(p, x = "PC1", y = "PC4",
+  lab = NULL,
+  colby = "TREATMENT",
+  shape = "GENOTYPE",
+  hline = 0, vline = 0,
+      # ellipse config
+  ellipse = F,
+  ellipseConf = 0.95,
+  ellipseFill = TRUE,
+  ellipseAlpha = 1/4,
+  ellipseLineSize = 1.0,
+  gridlines.major = FALSE, gridlines.minor = FALSE,
+  title = "PCA bi-plot",
+  subtitle = "PC1 versus PC4",
+  legendPosition = "right")
+dev.off()
+```
+
+
+******
+
+Proceed with RNotebook "01_Differential_gene_expression_analysis.Rmd".

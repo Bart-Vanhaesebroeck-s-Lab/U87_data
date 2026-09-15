@@ -1,0 +1,259 @@
+---
+title: "01_Differential_gene_expression_analysis"
+author: 
+- name: "Ralitsa R. Madsen"
+  affiliation: UCL
+output: 
+  html_notebook:
+    theme: united
+    toc: yes
+    toc_float: true
+  html_document:
+    code_folding: show
+    theme: paper
+    highlight: kate
+    df_print: paged
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+# Readme
+
+This notebook should only be run after "00_Setup_and_preprocessing.Rmd" has been run, with access to the same Global Environment. 
+
+The differential gene expression analysis performed within this RNotebook is based on the voom/limma/ebayes workflow, as outlined in the following references: 
+
+  - Smyth et al. 2016 limma: linear models for microarray and RNA-seq data user's guide; pp. 43-45 (or full Chapter 9)
+  - https://support.bioconductor.org/p/93742/
+
+
+# Setup
+
+```{r setup, warning=FALSE}
+knitr::opts_chunk$set(echo = T, warning = F, message = F) # setting global chunk options for knitted output
+#source("scripts/install.packages.R") # installs all required packages; uncomment and run if not done once already
+source("scripts/packages.R") # loads the required packages
+sessionInfo() # package version information
+input.data <- file.path(getwd(), "data_input/")
+output.figures <- file.path(getwd(), "figures_output/")
+output.df <- file.path(getwd(), "data_output/")
+options("scipen"=5, "digits"=4) # control scientific notation, in this case triggered only when number is 10 digits
+```
+
+# Design & contrast matrix setup
+
+```{r}
+print(metadata)
+```
+
+
+
+```{r}
+genotype.treatment <- paste(genotype.samples, treatment.samples, sep=".")
+design.matrix <-
+  model.matrix( ~ 0 + genotype.treatment + exp.samples) # note inclusion of replicate experiment to regress any batch effects though preprocessing suggested these to be minor
+design.matrix #check
+```
+
+
+```{r}
+contr.matrix <- makeContrasts(
+  KO_INH1 =  genotype.treatmentKO.inh1-genotype.treatmentKO.vehicle,
+  KO_INH2 =  genotype.treatmentKO.inh2-genotype.treatmentKO.vehicle,
+  WT_INH1 =  genotype.treatmentWT.inh1-genotype.treatmentWT.vehicle,
+  WT_INH2 =  genotype.treatmentWT.inh2-genotype.treatmentWT.vehicle,
+  KOvsWT = ((genotype.treatmentKO.inh1+genotype.treatmentKO.inh2+genotype.treatmentKO.vehicle)/3) - ((genotype.treatmentWT.inh1+genotype.treatmentWT.inh2+genotype.treatmentWT.vehicle)/3),
+  levels = colnames(design.matrix)
+)
+contr.matrix
+```
+
+# Voom, limma, eBayes 
+
+- Model the mean-variance relations with the voom method; see doi: 10.1186/gb-2014-15-2-r29
+
+
+```{r}
+v.DGE <-
+  voom(rawGeneCountTable.DGE.filt, design.matrix, plot = TRUE) 
+```
+
+
+```{r}
+vfit.DGE <-
+  lmFit(v.DGE, design.matrix) # linear modelling; 
+# uses the normalised expression values on the log2 scale (calculated by voom)
+# and the inverse variance weights (calculated by voom)
+vfit.DGE <-
+  contrasts.fit(vfit.DGE, contrasts = contr.matrix)
+efit.DGE <-
+  eBayes(vfit.DGE, proportion = 0.01) # default proportion = assumed proportion of genes that are differentially expressed
+```
+
+
+```{r}
+plotSA(efit.DGE) # heteroscedascity removed 
+```
+
+# Differentially expressed genes
+
+## Summary
+
+- Control FDR (Benjamini-Hochberg FDR at 5 %). Using method "separate" in this case - "global" is more stringent as it effectively would the a multiple comparison across 5x ~18000 genes instead of 1x only = correcting for multiple comparisons within each contrast rather than globally. 
+
+```{r}
+summary(decideTests(efit.DGE, method = "separate")) 
+```
+
+- Test effect of 'magnitude' of differential expression by varying fold-change cut-off
+
+```{r}
+summary(decideTests(efit.DGE, method = "separate", lfc=log2(2))) 
+```
+
+
+```{r}
+summary(decideTests(efit.DGE, method = "separate", lfc=log2(1.3))) 
+```
+
+
+
+## BioMart annotation & data export
+
+Export the limma object and read again as a dataframe for easier access to the results. The following variables are extracted: 
+
+1. The average log2-intensity (A)
+2. The coefficients or contrasts (log2-fold-changes) 
+3. Moderated t-statistics 
+4. t-statistic P-values (including B-H adjusted p-values)
+5. F-statistic if available
+6. F-statistic P-values if available
+7. Classification if available
+8. Gene names and annotation.
+
+```{r max.print = 15000}
+write.fit(efit.DGE,
+          file = paste0(output.df, Sys.Date(), sep="_", "limmma_voom_DE_U87_PI3Kd_ELG_BV", ".txt"),
+          adjust = "BH",
+          method = "separate") # Note that you don't specify lfc in this case because it outputs all genes with the adjusted p-value 
+de.data <- 
+  read.delim(paste0(output.df, Sys.Date(), sep="_", "limmma_voom_DE_U87_PI3Kd_ELG_BV", ".txt"),
+             sep = "",
+             header = T)
+```
+
+```{r}
+de.data$Genes <- rownames(de.data)
+de.data
+```
+
+- Interface with BioMart to retrieve gene annotation
+
+```{r}
+gene.mart.gene <-
+  getBM(
+    attributes = c("ensembl_gene_id", "hgnc_symbol", "entrezgene_id", "uniprotswissprot"), # unitprot and HGNC needed for many downstream functions 
+    filters = "ensembl_gene_id",
+    values = de.data$Genes,
+    mart = mart
+  )
+colnames(gene.mart.gene) <- c("Genes", "HGNC", "Entrez", "uniprot")
+gene.mart.gene <-
+  gene.mart.gene[!duplicated(gene.mart.gene$Genes), ] 
+de.data.annot <-
+  left_join(de.data, gene.mart.gene, by = "Genes")
+##
+de.data.annot # still 17636 columns
+```
+
+```{r}
+# Check for PIK3CD
+de.data.annot %>% 
+  filter(grepl("PIK3CA|PIK3CD|PIK3CB", HGNC))
+```
+
+- Extract background gene set for external pathway analyses
+
+```{r}
+write.table(de.data.annot %>% 
+              filter(Genes != "") %>% 
+              .$Genes, 
+            file = paste0(output.df, Sys.Date(), sep="_", "bgd_genes_ENSG_U87_PI3KD", ".txt"), row.names=F)
+```
+
+```{r}
+write.table(de.data.annot %>% 
+              filter(HGNC != "") %>% 
+              .$HGNC, 
+            file = paste0(output.df, Sys.Date(), sep="_", "bgd_genes_HGNC_U87_PI3KD", ".txt"), row.names=F)
+```
+
+
+- Write out the annotated gene expression analysis results
+
+```{r}
+write_csv(de.data.annot,
+          file=paste0(output.df, Sys.Date(), sep="_", "limmma_voom_DE_U87_PI3Kd_ELG_BV_annotated.csv"))
+```
+
+
+
+- Write out the log2 expression values from voom, alongside gene annotation
+
+
+```{r}
+voom_values <- as.data.frame(v.DGE$E)
+voom_values$Genes <- rownames(voom_values)
+```
+
+```{r}
+voom_values_annot <-
+  left_join(voom_values, gene.mart.gene, by = "Genes")
+```
+
+```{r}
+voom_values_annot %>% 
+  filter(grepl("PIK3CA|PIK3CD|PIK3CB", HGNC))
+```
+
+
+```{r}
+write_csv(voom_values_annot,
+          file=paste0(output.df, Sys.Date(), sep="_", "voom_values_U87_PIK3d_ELG_BV_annotated.csv"))
+```
+
+
+```{r}
+results <- decideTests(efit.DGE, adjust.method = "BH", 
+                       method = "separate",
+                       lfc=log2(1.3))
+results.df <- as.data.frame(results)
+results.df$Genes <- rownames(results)
+```
+
+- Retrieve HGNC annotation for above 
+
+```{r}
+gene.mart.gene.1 <-
+  getBM(
+    attributes = c("ensembl_gene_id", "hgnc_symbol"),
+    filters = "ensembl_gene_id",
+    values = results.df$Genes,
+    mart = mart
+  )
+colnames(gene.mart.gene.1) <- c("Genes", "HGNC")
+gene.mart.gene.1 <-
+  gene.mart.gene.1[!duplicated(gene.mart.gene.1$Genes), ] 
+results.df <-
+  left_join(results.df, gene.mart.gene.1, by = "Genes")
+###
+results.df #17,636 rows = correct
+```
+******
+
+Proceed with RNotebook "02_GSEA_pathway_analyses.Rmd".
+
+******
+
+

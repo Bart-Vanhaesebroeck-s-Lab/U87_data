@@ -1,0 +1,46 @@
+install.packages("BiocManager")
+BiocManager::install() # update installed Bioconductor packages
+BiocManager::install("biomaRt")
+BiocManager::install("GSA")
+BiocManager::install("msigdbr")
+BiocManager::install("fgsea")
+BiocManager::install("progeny")
+BiocManager::install('PCAtools')
+BiocManager::install('dorothea')
+BiocManager::install("org.Hs.eg.db")
+BiocManager::install("KEGGREST")
+BiocManager::install("vsn")
+BiocManager::install("RCy3")
+BiocManager::install("EGSEA")
+
+install.packages(c("DT",
+                   "downloader",
+                   "dplyr",
+                   "tidyr",
+                   "devtools",
+                   "stringr",
+                   "RColorBrewer",
+                   "gplots",
+                   "calibrate",
+                   "ggplot2",
+                   "ggrepel",
+                   "ggcorrplot",
+                   "edgeR",
+                   "limma",
+                   "RColorBrewer",
+                   "readr",
+                   "ggridges",
+                   "ggpubr",
+                   "patchwork",
+                   "data.table",
+                   "Hmisc",
+                   "UpSetR",
+                   "ComplexHeatmap",
+                   "corrplot",
+                   "viridis",
+                   "venn",
+                   "webchem",
+                   "tidygraph",
+                   "ggraph",
+                   "gprofiler2"
+))
